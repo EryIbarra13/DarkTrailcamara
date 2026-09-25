@@ -199,7 +199,13 @@ MEDIA_PAIRS.forEach(item => {
     });
 
     allMarkerTemplates.push({
-      targetData: item,
+      targetData: {
+        id: item.id,
+        nombre: item.nombre,
+        imageSrc: item.imageSrc,
+        videoSrc: item.videoSrc,
+        aspectRatio: item.aspectRatio
+      },
       templates: markerTemplates
     });
 
@@ -401,10 +407,11 @@ function scoreWindow(px,py,ww,wh, templatesArr){
 
     let best=-1;
     for(let b=0;b<BRT;b++){
-      const s=ncc(templatesArr[ri*BRT+b], gray);
+      const templateIdx = ri*BRT + b;
       if(s>best) best=s;
     }
-    total+=best; count++;
+    total+=best; 
+    count++;
   }
   return count>0 ? total/count : 0;
 }
