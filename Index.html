@@ -17,7 +17,8 @@
     .img-frame{border:2px solid #ff2222;border-radius:10px;padding:4px;box-shadow:0 0 15px #ff000044;width:80px;height:100px;overflow:hidden;flex-shrink:0}
     .img-frame img{width:100%;height:100%;object-fit:cover;border-radius:6px}
     
-    #start-btn{background:#cc0000;color:#fff;border:none;border-radius:8px;padding:14px 36px;font-size:1rem;font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:.06em;box-shadow:0 0 20px #ff000055;width:100%;max-width:280px}
+    #start-btn{background:#cc0000;color:#fff;border:none;border-radius:8px;padding:14px 36px;font-size:1rem;font-weight:700;cursor:pointer;text-transform:uppercase;letter-spacing:.06em;box-shadow:0 0 20px #ff000055;width:100%;max-width:280px;opacity:0.5;pointer-events:none;transition:all 0.3s}
+    #start-btn.ready{opacity:1;pointer-events:auto}
     #start-btn:active{background:#ff1111;transform:scale(.97)}
 
     /* Cámara */
@@ -54,9 +55,9 @@
   <h1>💀 SCARE CAM AR</h1>
   <p>Apunta la cámara a cualquiera de estas imágenes:</p>
   <div class="previews-grid" id="previews-container">
-    <!-- Se generan dinámicamente -->
+    <!-- Vistas previas cargadas dinámicamente -->
   </div>
-  <p style="font-size:11px;color:#666">Mantén la imagen elegida dentro del visor</p>
+  <p style="font-size:11px;color:#666" id="status-txt">Cargando marcadores...</p>
   <button id="start-btn">🎃 Iniciar</button>
 </div>
 
@@ -88,11 +89,11 @@
   style="position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;pointer-events:none"></video>
 
 <script>
-// ── Configuración de Parejas Imagen -> Video ──
+// ── Configuración de parejas Imagen -> Video ──
 const MEDIA_PAIRS = [
   {
     id: "marcador_A",
-    nombre: "Goku",
+    nombre: "Marcador A",
     imageSrc: "goku.jpg",
     videoSrc: "animacion.mp4",
     aspectRatio: 900 / 1157 // 0.778
@@ -100,8 +101,8 @@ const MEDIA_PAIRS = [
   {
     id: "marcador_B",
     nombre: "Marcador B",
-    imageSrc: "gokuoriginal.jpg",
-    videoSrc: "goku.mp4",
+    imageSrc: "imagenB.jpg",
+    videoSrc: "videoB.mp4",
     aspectRatio: 1.0
   },
   {
@@ -132,9 +133,11 @@ const camVideo   = document.getElementById('cam-video');
 const arCanvas   = document.getElementById('ar-canvas');
 const horrorSrc  = document.getElementById('horror-src');
 const viewfinder = document.getElementById('viewfinder');
+const startBtn   = document.getElementById('start-btn');
+const statusTxt  = document.getElementById('status-txt');
 const ctx        = arCanvas.getContext('2d', { alpha:true });
 
-// Generar vistas previas en la pantalla Splash
+// Renderizar vistas previas
 const previewsContainer = document.getElementById('previews-container');
 MEDIA_PAIRS.forEach(pair => {
   const frame = document.createElement('div');
@@ -144,74 +147,81 @@ MEDIA_PAIRS.forEach(pair => {
 });
 
 let active=false, detected=false;
-let activeTarget = null; // Guardará el objeto activo de MEDIA_PAIRS al detectar
+let activeTarget = null;
 let sX=0,sY=0,sW=0,sH=0;
 const LERP=0.12;
 let missCount=0;
 const MISS_MAX=6;
 let videoAlpha=0;
 
-// Tamaño del template de referencia
+// Tamaño de procesamiento de patrones
 const TW=48, TH=60;
 const refCanvas=document.createElement('canvas');
 refCanvas.width=TW; refCanvas.height=TH;
 const refCtx=refCanvas.getContext('2d',{willReadFrequently:true});
 
-// Múltiples regiones para extraer patrones clave
 const TEMPLATE_REGIONS = [
-  {x:0,    y:0,    w:1,    h:1   },  // imagen completa
-  {x:0.20, y:0.20, w:0.40, h:0.20},  // zona central alta varianza
-  {x:0.60, y:0.20, w:0.20, h:0.20},  // zona derecha
-  {x:0.60, y:0.40, w:0.20, h:0.20},  // zona derecha media
-  {x:0.10, y:0.00, w:0.80, h:0.20},  // zona superior
-  {x:0.20, y:0.50, w:0.60, h:0.25},  // zona inferior
+  {x:0,    y:0,    w:1,    h:1   },
+  {x:0.20, y:0.20, w:0.40, h:0.20},
+  {x:0.60, y:0.20, w:0.20, h:0.20},
+  {x:0.60, y:0.40, w:0.20, h:0.20},
+  {x:0.10, y:0.00, w:0.80, h:0.20},
+  {x:0.20, y:0.50, w:0.60, h:0.25},
 ];
 
-// Estructura para almacenar las plantillas cargadas de todos los marcadores
 let allMarkerTemplates = [];
 
-// Cargar todas las imágenes del arreglo
-MEDIA_PAIRS.forEach(item => {
-  const refImg = new Image();
-  refImg.src = item.imageSrc;
-  refImg.onload = () => {
-    const brightnessLevels = [1.0, 1.6, 0.7];
-    const markerTemplates = [];
+// Función para cargar una imagen de forma asíncrona mediante Promesas
+function loadImage(pair) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.src = pair.imageSrc;
+    img.onload = () => resolve({ pair, img });
+    img.onerror = () => reject(`Error cargando: ${pair.imageSrc}`);
+  });
+}
 
-    TEMPLATE_REGIONS.forEach(r => {
-      brightnessLevels.forEach(brt => {
-        refCtx.clearRect(0,0,TW,TH);
-        refCtx.drawImage(refImg,
-          r.x*refImg.naturalWidth, r.y*refImg.naturalHeight,
-          r.w*refImg.naturalWidth, r.h*refImg.naturalHeight,
-          0,0,TW,TH);
+// Carga sincrónica en orden de todas las imágenes
+Promise.all(MEDIA_PAIRS.map(pair => loadImage(pair)))
+  .then(loadedItems => {
+    loadedItems.forEach(({ pair, img }) => {
+      const brightnessLevels = [1.0, 1.6, 0.7];
+      const markerTemplates = [];
 
-        if(brt !== 1.0) {
-          refCtx.globalCompositeOperation = brt > 1 ? 'screen' : 'multiply';
-          refCtx.globalAlpha = Math.abs(brt - 1.0);
-          refCtx.fillStyle = brt > 1 ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.3)';
-          refCtx.fillRect(0,0,TW,TH);
-          refCtx.globalCompositeOperation = 'source-over';
-          refCtx.globalAlpha = 1;
-        }
-        markerTemplates.push(toGrayNorm(refCtx.getImageData(0,0,TW,TH).data, TW*TH));
+      TEMPLATE_REGIONS.forEach(r => {
+        brightnessLevels.forEach(brt => {
+          refCtx.clearRect(0, 0, TW, TH);
+          refCtx.drawImage(img,
+            r.x * img.naturalWidth, r.y * img.naturalHeight,
+            r.w * img.naturalWidth, r.h * img.naturalHeight,
+            0, 0, TW, TH);
+
+          if (brt !== 1.0) {
+            refCtx.globalCompositeOperation = brt > 1 ? 'screen' : 'multiply';
+            refCtx.globalAlpha = Math.abs(brt - 1.0);
+            refCtx.fillStyle = brt > 1 ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.3)';
+            refCtx.fillRect(0, 0, TW, TH);
+            refCtx.globalCompositeOperation = 'source-over';
+            refCtx.globalAlpha = 1;
+          }
+          markerTemplates.push(toGrayNorm(refCtx.getImageData(0, 0, TW, TH).data, TW * TH));
+        });
+      });
+
+      allMarkerTemplates.push({
+        targetData: { ...pair },
+        templates: markerTemplates
       });
     });
 
-    allMarkerTemplates.push({
-      targetData: {
-        id: item.id,
-        nombre: item.nombre,
-        imageSrc: item.imageSrc,
-        videoSrc: item.videoSrc,
-        aspectRatio: item.aspectRatio
-      },
-      templates: markerTemplates
-    });
-
-    if(DEBUG) console.log(`Templates listos para ${item.id}:`, markerTemplates.length);
-  };
-});
+    statusTxt.textContent = "Mantén la imagen elegida dentro del visor";
+    startBtn.classList.add('ready');
+    if (DEBUG) console.log('Todas las plantillas procesadas en orden:', allMarkerTemplates);
+  })
+  .catch(err => {
+    if (DEBUG) console.error(err);
+    statusTxt.textContent = "Error al cargar recursos.";
+  });
 
 // Canvas de trabajo
 const WORK_W=240;
@@ -225,7 +235,7 @@ winCanvas.width=TW; winCanvas.height=TH;
 const winCtx=winCanvas.getContext('2d',{willReadFrequently:true});
 
 // ── Inicio ──
-document.getElementById('start-btn').addEventListener('click', async()=>{
+startBtn.addEventListener('click', async()=>{
   if(!navigator.mediaDevices?.getUserMedia){errorMsg.classList.add('visible');return;}
   try{
     const stream=await navigator.mediaDevices.getUserMedia({
@@ -281,7 +291,6 @@ function detect(){
   let bestMatchedMarker = null;
 
   if(!detected){
-    // Modo búsqueda: Evaluar cada uno de los marcadores registrados
     const scales=[0.30,0.45,0.62,0.80];
     const step=0.12;
 
@@ -308,7 +317,6 @@ function detect(){
       }
     }
   } else {
-    // Modo seguimiento: Evaluar solo el marcador que ya está activo
     const currentMarkerTemplates = allMarkerTemplates.find(m => m.targetData.id === activeTarget.id);
     if(currentMarkerTemplates) {
       const currentRatio = activeTarget.aspectRatio || 1.0;
@@ -354,16 +362,16 @@ function detect(){
     const tx=bestX*scX,ty=bestY*scY,tw=bestWW*scX,th=bestWH*scY;
     
     if(!detected || (activeTarget && activeTarget.id !== bestMatchedMarker.id)){
-      // Nueva detección
       activeTarget = bestMatchedMarker;
       sX=tx;sY=ty;sW=tw;sH=th;
       
-      // Ajustar visor y cambiar fuente de video dinámicamente
       if(activeTarget.aspectRatio){
         viewfinder.style.aspectRatio = activeTarget.aspectRatio;
       }
+      
+      // Cambio de video
       horrorSrc.src = activeTarget.videoSrc;
-      horrorSrc.currentTime=0;
+      horrorSrc.currentTime = 0;
       horrorSrc.load();
       horrorSrc.play().catch(()=>{});
       
@@ -372,7 +380,6 @@ function detect(){
       viewfinder.style.opacity='0';
       detected=true;
     } else {
-      // Seguimiento en movimiento
       sX+=(tx-sX)*LERP;sY+=(ty-sY)*LERP;
       sW+=(tw-sW)*LERP;sH+=(th-sH)*LERP;
     }
@@ -391,29 +398,34 @@ function detect(){
   }
 }
 
-// Puntuar una ventana contra las plantillas recibidas
-function scoreWindow(px,py,ww,wh, templatesArr){
-  const BRT=3;
-  let total=0, count=0;
-  for(let ri=0;ri<TEMPLATE_REGIONS.length;ri++){
-    const r=TEMPLATE_REGIONS[ri];
-    const zx=px+Math.round(r.x*ww);
-    const zy=py+Math.round(r.y*wh);
-    const zw=Math.max(2,Math.round(r.w*ww));
-    const zh=Math.max(2,Math.round(r.h*wh));
-    if(zx+zw>WORK_W||zy+zh>WORK_H) continue;
-    winCtx.drawImage(workCanvas,zx,zy,zw,zh,0,0,TW,TH);
-    const gray=toGrayNorm(winCtx.getImageData(0,0,TW,TH).data,TW*TH);
+function scoreWindow(px, py, ww, wh, templatesArr) {
+  const BRT = 3;
+  let total = 0, count = 0;
+  
+  for(let ri = 0; ri < TEMPLATE_REGIONS.length; ri++) {
+    const r = TEMPLATE_REGIONS[ri];
+    const zx = px + Math.round(r.x * ww);
+    const zy = py + Math.round(r.y * wh);
+    const zw = Math.max(2, Math.round(r.w * ww));
+    const zh = Math.max(2, Math.round(r.h * wh));
+    
+    if(zx + zw > WORK_W || zy + zh > WORK_H) continue;
+    
+    winCtx.drawImage(workCanvas, zx, zy, zw, zh, 0, 0, TW, TH);
+    const gray = toGrayNorm(winCtx.getImageData(0, 0, TW, TH).data, TW * TH);
 
-    let best=-1;
-    for(let b=0;b<BRT;b++){
-      const templateIdx = ri*BRT + b;
-      if(s>best) best=s;
+    let best = -1;
+    for(let b = 0; b < BRT; b++) {
+      const templateIdx = ri * BRT + b;
+      if (templatesArr[templateIdx]) {
+        const s = ncc(templatesArr[templateIdx], gray);
+        if(s > best) best = s;
+      }
     }
-    total+=best; 
+    total += best; 
     count++;
   }
-  return count>0 ? total/count : 0;
+  return count > 0 ? total / count : 0;
 }
 
 function renderVideo(){
